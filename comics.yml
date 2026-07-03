@@ -1,0 +1,16 @@
+# Daily comics digest — add or remove comics here.
+# Each entry needs a name and an RSS/Atom feed URL.
+# To add a comic: add two lines. To remove: delete its two lines. That's it.
+
+comics:
+  - name: Heathcliff
+    feed: https://www.comicsrss.com/rss/heathcliff.rss
+
+  - name: xkcd
+    feed: https://xkcd.com/rss.xml
+
+  - name: Dinosaur Comics
+    feed: https://www.qwantz.com/rssfeed.php
+
+  - name: Saturday Morning Breakfast Cereal
+    feed: https://www.smbc-comics.com/comic/rss
