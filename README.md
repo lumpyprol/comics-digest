@@ -34,17 +34,22 @@ in `.github/workflows/daily.yml` to adjust the time.
 
 ## Adding / removing comics
 
-Edit `comics.yml`. Each comic is just a name + RSS feed URL:
+Edit `comics.yml`. Each comic is a name plus either a `feed` (RSS/Atom URL)
+or a `page` (a web page whose metadata contains the day's strip):
 
 ```yaml
   - name: Nancy
-    feed: https://www.comicsrss.com/rss/nancy.rss
+    feed: https://someurl.example/nancy.rss
+
+  - name: Heathcliff
+    page: https://www.creators.com/read/heathcliff
 ```
 
 Delete an entry's two lines to remove it. Commit the change and the next
-run picks it up. For syndicated newspaper comics (GoComics strips like
-Heathcliff), comicsrss.com provides feeds; most indie webcomics have
-their own feed linked on their site.
+run picks it up. Most indie webcomics have their own feed linked on their
+site; for syndicated newspaper strips with no feed, use the strip's page
+on its syndicate's site (e.g. creators.com) as a `page` entry — the
+script grabs the strip from the page's `og:image` tag.
 
 ## How it works
 

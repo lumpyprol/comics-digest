@@ -1,10 +1,13 @@
 # Daily comics digest — add or remove comics here.
-# Each entry needs a name and an RSS/Atom feed URL.
+# Two kinds of entries:
+#   feed: <RSS/Atom feed URL>   — for comics with a feed (most webcomics)
+#   page: <web page URL>        — for comics without a feed; the day's strip
+#                                 is pulled from the page's og:image metadata
 # To add a comic: add two lines. To remove: delete its two lines. That's it.
 
 comics:
   - name: Heathcliff
-    feed: https://www.comicsrss.com/rss/heathcliff.rss
+    page: https://www.creators.com/read/heathcliff
 
   - name: xkcd
     feed: https://xkcd.com/rss.xml

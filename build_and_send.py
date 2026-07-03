@@ -18,8 +18,10 @@ Required environment variables (GitHub Actions secrets):
 
 import html
 import os
+import re
 import sys
 import urllib.parse
+import urllib.request
 from datetime import date
 
 import feedparser
@@ -49,6 +51,47 @@ def entry_html(entry):
     return getattr(entry, "summary", "")
 
 
+def og_meta(page_html, prop):
+    """Extract an Open Graph meta tag's content from raw HTML."""
+    pattern = (
+        r'<meta[^>]+(?:property|name)=["\']og:' + re.escape(prop) +
+        r'["\'][^>]+content=["\']([^"\']+)["\']'
+    )
+    m = re.search(pattern, page_html, re.IGNORECASE)
+    if not m:
+        # attribute order can be reversed: content=... property=...
+        pattern = (
+            r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+(?:property|name)=["\']og:'
+            + re.escape(prop) + r'["\']'
+        )
+        m = re.search(pattern, page_html, re.IGNORECASE)
+    return m.group(1) if m else None
+
+
+def section_from_page(comic):
+    """Comics without a feed: pull the strip from the page's og:image metadata."""
+    req = urllib.request.Request(comic["page"], headers=HEADERS)
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        page = resp.read().decode("utf-8", errors="replace")
+
+    image = og_meta(page, "image")
+    if not image:
+        raise RuntimeError("no og:image found on page")
+    title = og_meta(page, "title") or comic["name"]
+    link = og_meta(page, "url") or comic["page"]
+
+    return title, link, f'<img src="{html.escape(image)}" alt="{html.escape(title)}">'
+
+
+def section_from_feed(comic):
+    entry = latest_entry(comic["feed"])
+    if entry is None:
+        raise RuntimeError("feed returned no entries")
+    title = getattr(entry, "title", comic["name"])
+    link = getattr(entry, "link", comic["feed"])
+    return title, link, entry_html(entry)
+
+
 def build_digest(comics):
     pretty = date.today().strftime("%A, %B %-d, %Y")
     sections, failures = [], []
@@ -56,22 +99,20 @@ def build_digest(comics):
     for comic in comics:
         name = comic["name"]
         try:
-            entry = latest_entry(comic["feed"])
+            if "page" in comic:
+                title, link, body = section_from_page(comic)
+            else:
+                title, link, body = section_from_feed(comic)
         except Exception as e:
-            entry = None
             print(f"[warn] {name}: {e}", file=sys.stderr)
-
-        if entry is None:
             failures.append(name)
             continue
 
-        title = html.escape(getattr(entry, "title", name))
-        link = getattr(entry, "link", comic["feed"])
         sections.append(
             f"""
             <h2>{html.escape(name)}</h2>
-            <p><em>{title}</em> &mdash; <a href="{html.escape(link)}">original</a></p>
-            <div>{entry_html(entry)}</div>
+            <p><em>{html.escape(title)}</em> &mdash; <a href="{html.escape(link)}">original</a></p>
+            <div>{body}</div>
             <hr>
             """
         )
