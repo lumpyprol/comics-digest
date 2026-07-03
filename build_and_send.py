@@ -16,7 +16,9 @@ Required environment variables (GitHub Actions secrets):
   INSTAPAPER_PASSWORD          your Instapaper password
 """
 
+import base64
 import html
+import mimetypes
 import os
 import re
 import sys
@@ -92,6 +94,41 @@ def section_from_feed(comic):
     return title, link, entry_html(entry)
 
 
+def inline_images(body_html, referer):
+    """Download every <img> and embed it as a base64 data URI so the
+    article is self-contained and nothing depends on hotlinking."""
+
+    def fetch_as_data_uri(url):
+        req = urllib.request.Request(
+            url, headers={**HEADERS, "Referer": referer}
+        )
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = resp.read()
+            mime = resp.headers.get_content_type()
+        if not mime.startswith("image/"):
+            mime = mimetypes.guess_type(url)[0] or "image/png"
+        return f"data:{mime};base64,{base64.b64encode(data).decode()}"
+
+    def replace(match):
+        src = match.group(2)
+        if src.startswith("data:"):
+            return match.group(0)
+        if src.startswith("//"):
+            src = "https:" + src
+        try:
+            return match.group(1) + fetch_as_data_uri(src) + match.group(3)
+        except Exception as e:
+            print(f"[warn] couldn't inline image {src}: {e}", file=sys.stderr)
+            return match.group(0)  # keep the original URL as a fallback
+
+    return re.sub(
+        r'(<img[^>]+src=["\'])([^"\']+)(["\'])',
+        replace,
+        body_html,
+        flags=re.IGNORECASE,
+    )
+
+
 def build_digest(comics):
     pretty = date.today().strftime("%A, %B %-d, %Y")
     sections, failures = [], []
@@ -107,6 +144,8 @@ def build_digest(comics):
             print(f"[warn] {name}: {e}", file=sys.stderr)
             failures.append(name)
             continue
+
+        body = inline_images(body, referer=link)
 
         sections.append(
             f"""
