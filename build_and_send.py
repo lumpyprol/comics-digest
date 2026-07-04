@@ -1,19 +1,22 @@
 #!/usr/bin/env python3
 """
-Daily webcomics digest -> Instapaper Full API (private content upload).
+Daily webcomics digest -> Instapaper Full API, images on GitHub Pages.
 
-1. Reads comics.yml and grabs the latest entry from each feed.
-2. Compiles a single HTML digest.
-3. Authenticates with Instapaper via xAuth (OAuth 1.0a).
-4. Uploads the digest directly with bookmarks/add using
-   is_private_from_source + content — no hosting, no email,
-   and the article is private to your account.
+build phase:
+  Reads comics.yml, grabs the latest strip from each source, downloads
+  the strip images into docs/img/<date>/ (served by GitHub Pages), and
+  writes the article HTML (with rewritten image URLs) to digest_content.html.
 
-Required environment variables (GitHub Actions secrets):
-  INSTAPAPER_CONSUMER_KEY      from your approved API application
-  INSTAPAPER_CONSUMER_SECRET   from your approved API application
+save phase (after the workflow commits & Pages deploys):
+  Waits until the rehosted images are live, authenticates via xAuth,
+  and uploads the article as a private bookmark with bookmarks/add.
+
+Required environment (GitHub Actions secrets/vars):
+  INSTAPAPER_CONSUMER_KEY      from your Instapaper API application
+  INSTAPAPER_CONSUMER_SECRET   from your Instapaper API application
   INSTAPAPER_USERNAME          your Instapaper username (usually your email)
   INSTAPAPER_PASSWORD          your Instapaper password
+  PAGES_BASE_URL               e.g. https://<user>.github.io/<repo>
 """
 
 import base64
@@ -25,6 +28,7 @@ import sys
 import urllib.parse
 import urllib.request
 from datetime import date
+from pathlib import Path
 
 import feedparser
 import yaml
@@ -94,31 +98,37 @@ def section_from_feed(comic):
     return title, link, entry_html(entry)
 
 
-def inline_images(body_html, referer):
-    """Download every <img> and embed it as a base64 data URI so the
-    article is self-contained and nothing depends on hotlinking."""
+DOCS_DIR = Path(__file__).parent / "docs"
 
-    def fetch_as_data_uri(url):
-        req = urllib.request.Request(
-            url, headers={**HEADERS, "Referer": referer}
-        )
+
+def rehost_images(body_html, referer, day_dir, base_url, saved):
+    """Download every <img> into docs/img/<date>/ and rewrite its src to the
+    GitHub Pages URL. Instapaper can always fetch from Pages, unlike some
+    comic servers that block it."""
+
+    def fetch(url):
+        req = urllib.request.Request(url, headers={**HEADERS, "Referer": referer})
         with urllib.request.urlopen(req, timeout=30) as resp:
             data = resp.read()
             mime = resp.headers.get_content_type()
-        if not mime.startswith("image/"):
-            mime = mimetypes.guess_type(url)[0] or "image/png"
-        return f"data:{mime};base64,{base64.b64encode(data).decode()}"
+        ext = mimetypes.guess_extension(mime) or Path(urllib.parse.urlparse(url).path).suffix or ".png"
+        if ext == ".jpe":
+            ext = ".jpg"
+        name = f"{len(saved):02d}{ext}"
+        out = DOCS_DIR / "img" / day_dir / name
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_bytes(data)
+        saved.append(out)
+        return f"{base_url}/img/{day_dir}/{name}"
 
     def replace(match):
         src = match.group(2)
-        if src.startswith("data:"):
-            return match.group(0)
         if src.startswith("//"):
             src = "https:" + src
         try:
-            return match.group(1) + fetch_as_data_uri(src) + match.group(3)
+            return match.group(1) + fetch(src) + match.group(3)
         except Exception as e:
-            print(f"[warn] couldn't inline image {src}: {e}", file=sys.stderr)
+            print(f"[warn] couldn't rehost image {src}: {e}", file=sys.stderr)
             return match.group(0)  # keep the original URL as a fallback
 
     return re.sub(
@@ -129,9 +139,11 @@ def inline_images(body_html, referer):
     )
 
 
-def build_digest(comics):
-    pretty = date.today().strftime("%A, %B %-d, %Y")
-    sections, failures = [], []
+def build_digest(comics, base_url):
+    today = date.today()
+    pretty = today.strftime("%A, %B %-d, %Y")
+    day_dir = today.isoformat()
+    sections, failures, saved = [], [], []
 
     for comic in comics:
         name = comic["name"]
@@ -145,7 +157,7 @@ def build_digest(comics):
             failures.append(name)
             continue
 
-        body = inline_images(body, referer=link)
+        body = rehost_images(body, link, day_dir, base_url, saved)
 
         sections.append(
             f"""
@@ -163,10 +175,16 @@ def build_digest(comics):
     if failures:
         note = f"<p><small>Couldn't fetch today: {html.escape(', '.join(failures))}</small></p>"
 
-    body = f"""<h1>Comics Digest — {pretty}</h1>
+    content = f"""<h1>Comics Digest — {pretty}</h1>
 {''.join(sections)}
 {note}"""
-    return pretty, body
+
+    # Stash the article body so the save phase (after the Pages deploy)
+    # uploads exactly what was built, images already rewritten.
+    (DOCS_DIR / "img" / day_dir).mkdir(parents=True, exist_ok=True)
+    (Path("digest_content.html")).write_text(content, encoding="utf-8")
+    print(f"Built digest with {len(saved)} rehosted images.")
+    return saved
 
 
 # ---------- Instapaper Full API ----------
@@ -209,13 +227,45 @@ def add_private_bookmark(consumer_key, consumer_secret, token, token_secret,
     print(f"Saved to Instapaper: {title}")
 
 
+def wait_until_live(url, attempts=20, delay=15):
+    import time
+    for _ in range(attempts):
+        try:
+            req = urllib.request.Request(url, headers=HEADERS)
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                if resp.status == 200:
+                    print(f"Pages deploy is live: {url}")
+                    return
+        except Exception:
+            pass
+        time.sleep(delay)
+    raise RuntimeError(f"Rehosted image never became reachable: {url}")
+
+
 def main():
+    mode = sys.argv[1] if len(sys.argv) > 1 else "build"
+    base_url = os.environ["PAGES_BASE_URL"].rstrip("/")
+    pretty = date.today().strftime("%A, %B %-d, %Y")
+
+    if mode == "build":
+        build_digest(load_comics(), base_url)
+        return
+
+    if mode != "save":
+        sys.exit(f"Unknown mode: {mode} (use 'build' or 'save')")
+
+    content = Path("digest_content.html").read_text(encoding="utf-8")
+
+    # Wait for the first rehosted image to be reachable before saving, so
+    # Instapaper doesn't fetch the article while Pages is still deploying.
+    m = re.search(re.escape(base_url) + r'[^"\']+', content)
+    if m:
+        wait_until_live(m.group(0))
+
     consumer_key = os.environ["INSTAPAPER_CONSUMER_KEY"]
     consumer_secret = os.environ["INSTAPAPER_CONSUMER_SECRET"]
     username = os.environ["INSTAPAPER_USERNAME"]
     password = os.environ["INSTAPAPER_PASSWORD"]
-
-    pretty, content = build_digest(load_comics())
 
     token, token_secret = get_access_token(
         consumer_key, consumer_secret, username, password

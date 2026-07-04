@@ -1,23 +1,34 @@
-# Daily Comics Digest → Instapaper (Full API, private upload)
+# Daily Comics Digest → Instapaper (Full API + Pages-hosted images)
 
 Every day this fetches the latest strip from each comic in `comics.yml`,
-compiles them into one HTML digest, and uploads it directly to your
-Instapaper account as a **private** article via the Full API. No email,
-no public hosting — the content goes straight from the GitHub Actions
-runner to Instapaper.
+downloads the strip images, hosts them on GitHub Pages, and uploads the
+digest article itself directly (and privately) to your Instapaper account
+via the Full API. The article text never touches public hosting; only
+the strip images do, because Instapaper needs a reliably fetchable URL
+for images (it strips embedded data URIs and some comic servers block
+its image fetcher).
 
 ## One-time setup
 
-1. **Apply for Instapaper API keys** at
+1. **Get Instapaper API keys** at
    https://www.instapaper.com/main/request_oauth_consumer_token
-   Describe it as a personal daily-digest tool. Once approved you'll
-   receive an **OAuth consumer key** and **consumer secret**.
-   (This is the only waiting step — everything else takes five minutes.)
+   (fill in title/description/URL/email; keys appear immediately;
+   "Owner Only" is fine).
 
 2. **Create a GitHub repo** and push these files to it.
 
-3. **Add repository secrets** (repo → Settings → Secrets and variables →
-   Actions → New repository secret):
+3. **Turn on GitHub Pages:** repo → Settings → Pages → under "Build and
+   deployment", set Source to **Deploy from a branch**, branch `main`,
+   folder `/docs`. Save.
+
+4. **Add a repository variable** (Settings → Secrets and variables →
+   Actions → **Variables** tab):
+
+   | Variable | Value |
+   |---|---|
+   | `PAGES_BASE_URL` | `https://<your-username>.github.io/<repo-name>` |
+
+5. **Add repository secrets** (same page, **Secrets** tab):
 
    | Secret | Value |
    |---|---|
@@ -26,8 +37,7 @@ runner to Instapaper.
    | `INSTAPAPER_USERNAME` | your Instapaper username (usually your email) |
    | `INSTAPAPER_PASSWORD` | your Instapaper password |
 
-4. **Test it:** repo → Actions → "Daily comics digest" → Run workflow.
-   Today's digest should appear in your Instapaper queue within a minute.
+6. **Test it:** repo → Actions → "Daily comics digest" → Run workflow.
 
 It then runs automatically every day at 13:00 UTC. Change the `cron` line
 in `.github/workflows/daily.yml` to adjust the time.
@@ -53,21 +63,22 @@ script grabs the strip from the page's `og:image` tag.
 
 ## How it works
 
-1. `build_and_send.py` pulls the newest entry from each feed and builds
-   one HTML document
-2. It authenticates via xAuth (`oauth/access_token`) using your consumer
-   keys + account credentials
-3. It calls `bookmarks/add` with `is_private_from_source` and `content`,
-   which tells Instapaper to store the supplied HTML directly as a
-   private bookmark — no URL involved
+1. `build_and_send.py build` pulls the newest strip from each source,
+   downloads every strip image into `docs/img/<date>/`, and writes the
+   article HTML (pointing at the Pages URLs) to `digest_content.html`
+2. The workflow commits `docs/`; GitHub Pages serves the images
+3. `build_and_send.py save` waits until the images are live, then
+   authenticates via xAuth and calls `bookmarks/add` with
+   `is_private_from_source` + `content` — the article itself is private
 
 ## Notes
 
-- Strip images are referenced from the comics' own servers, so Instapaper
-  fetches them when it processes the article. If a particular comic shows
-  up image-less, its feed probably doesn't embed the image — that's
-  fixable per-comic with a small scraper.
+- **The strip images are public** at obscure Pages URLs (that's what
+  makes them reliably fetchable by Instapaper). The digest article and
+  your reading list stay private.
 - If a feed is down one day, the digest still uploads and lists what it
-  couldn't fetch at the bottom.
-- If the run fails with an auth error, re-check the four secrets; xAuth
-  errors also occur if the consumer token hasn't been approved yet.
+  couldn't fetch at the bottom. If a single image fails to download, the
+  original comic-server URL is kept as a fallback for that image.
+- Old daily image folders accumulate in `docs/img/`; harmless, but you
+  can delete them whenever.
+- If the run fails with an auth error, re-check the four secrets.
