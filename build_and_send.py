@@ -19,9 +19,8 @@ Required environment (GitHub Actions secrets/vars):
   PAGES_BASE_URL               e.g. https://<user>.github.io/<repo>
 """
 
-import base64
 import html
-import mimetypes
+import io
 import os
 import re
 import sys
@@ -32,6 +31,7 @@ from pathlib import Path
 
 import feedparser
 import yaml
+from PIL import Image
 from requests_oauthlib import OAuth1Session
 
 BASE = "https://www.instapaper.com/api/1"
@@ -101,6 +101,28 @@ def section_from_feed(comic):
 DOCS_DIR = Path(__file__).parent / "docs"
 
 
+MAX_DIMENSION = 1400  # longest image side, e-reader friendly
+
+
+def normalize_image(data):
+    """Convert to JPEG on white background, capped at MAX_DIMENSION.
+    Kobo's firmware silently drops images it doesn't like (huge dimensions,
+    some PNG variants); normalized JPEGs render everywhere."""
+    img = Image.open(io.BytesIO(data))
+    if img.mode in ("RGBA", "LA", "P"):
+        img = img.convert("RGBA")
+        bg = Image.new("RGB", img.size, (255, 255, 255))
+        bg.paste(img, mask=img.split()[-1])
+        img = bg
+    elif img.mode != "RGB":
+        img = img.convert("RGB")
+    if max(img.size) > MAX_DIMENSION:
+        img.thumbnail((MAX_DIMENSION, MAX_DIMENSION), Image.LANCZOS)
+    out = io.BytesIO()
+    img.save(out, format="JPEG", quality=88)
+    return out.getvalue()
+
+
 def rehost_images(body_html, referer, day_dir, base_url, saved):
     """Download every <img> into docs/img/<date>/ and rewrite its src to the
     GitHub Pages URL. Instapaper can always fetch from Pages, unlike some
@@ -110,11 +132,8 @@ def rehost_images(body_html, referer, day_dir, base_url, saved):
         req = urllib.request.Request(url, headers={**HEADERS, "Referer": referer})
         with urllib.request.urlopen(req, timeout=30) as resp:
             data = resp.read()
-            mime = resp.headers.get_content_type()
-        ext = mimetypes.guess_extension(mime) or Path(urllib.parse.urlparse(url).path).suffix or ".png"
-        if ext == ".jpe":
-            ext = ".jpg"
-        name = f"{len(saved):02d}{ext}"
+        data = normalize_image(data)
+        name = f"{len(saved):02d}.jpg"
         out = DOCS_DIR / "img" / day_dir / name
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_bytes(data)
@@ -256,11 +275,13 @@ def main():
 
     content = Path("digest_content.html").read_text(encoding="utf-8")
 
-    # Wait for the first rehosted image to be reachable before saving, so
+    # Wait for every rehosted image to be reachable before saving, so
     # Instapaper doesn't fetch the article while Pages is still deploying.
-    m = re.search(re.escape(base_url) + r'[^"\']+', content)
-    if m:
-        wait_until_live(m.group(0))
+    # (Polling only one URL is not enough: on a same-day re-run some images
+    # already exist from an earlier deploy while others are still missing.)
+    urls = sorted(set(re.findall(re.escape(base_url) + r'[^"\']+', content)))
+    for url in urls:
+        wait_until_live(url)
 
     consumer_key = os.environ["INSTAPAPER_CONSUMER_KEY"]
     consumer_secret = os.environ["INSTAPAPER_CONSUMER_SECRET"]
