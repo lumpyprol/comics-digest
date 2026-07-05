@@ -74,19 +74,48 @@ def og_meta(page_html, prop):
     return m.group(1) if m else None
 
 
+def parse_images(fragment):
+    """Extract (src, hover_text) for each <img> in an HTML fragment.
+    The hidden joke lives in the title attribute for xkcd/SMBC/qwantz."""
+    images = []
+    for tag in re.findall(r"<img\b[^>]*>", fragment, re.IGNORECASE):
+        src = re.search(r'src=["\']([^"\']+)["\']', tag, re.IGNORECASE)
+        if not src:
+            continue
+        hover = re.search(r'title=["\']([^"\']*)["\']', tag, re.IGNORECASE)
+        text = html.unescape(hover.group(1)).strip() if hover else None
+        images.append((src.group(1), text or None))
+    return images
+
+
+def fetch_page(url):
+    req = urllib.request.Request(url, headers=HEADERS)
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        return resp.read().decode("utf-8", errors="replace")
+
+
+def bonus_panel(page_html, element_id):
+    """Find the bonus-panel <img> inside the element with the given id
+    (SMBC's votey lives in <div id="aftercomic">)."""
+    m = re.search(
+        r'id=["\']' + re.escape(element_id) + r'["\'][\s\S]{0,500}?(<img\b[^>]*>)',
+        page_html, re.IGNORECASE,
+    )
+    if not m:
+        return None
+    imgs = parse_images(m.group(1))
+    return imgs[0] if imgs else None
+
+
 def section_from_page(comic):
     """Comics without a feed: pull the strip from the page's og:image metadata."""
-    req = urllib.request.Request(comic["page"], headers=HEADERS)
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        page = resp.read().decode("utf-8", errors="replace")
-
+    page = fetch_page(comic["page"])
     image = og_meta(page, "image")
     if not image:
         raise RuntimeError("no og:image found on page")
     title = og_meta(page, "title") or comic["name"]
     link = og_meta(page, "url") or comic["page"]
-
-    return title, link, f'<img src="{html.escape(image)}" alt="{html.escape(title)}">'
+    return title, link, [(image, None)]
 
 
 def section_from_feed(comic):
@@ -95,7 +124,21 @@ def section_from_feed(comic):
         raise RuntimeError("feed returned no entries")
     title = getattr(entry, "title", comic["name"])
     link = getattr(entry, "link", comic["feed"])
-    return title, link, entry_html(entry)
+    images = parse_images(entry_html(entry))
+    if not images:
+        raise RuntimeError("no image found in feed entry")
+
+    # Optional bonus panel scraped from the strip's own page (e.g. SMBC's
+    # votey in <div id="aftercomic">), unless the feed already included it.
+    if comic.get("bonus_id") and link:
+        try:
+            bonus = bonus_panel(fetch_page(link), comic["bonus_id"])
+            if bonus and bonus[0] not in [src for src, _ in images]:
+                images.append(bonus)
+        except Exception as e:
+            print(f"[warn] {comic['name']} bonus panel: {e}", file=sys.stderr)
+
+    return title, link, images
 
 
 DOCS_DIR = Path(__file__).parent / "docs"
@@ -168,24 +211,23 @@ def build_digest(comics, base_url):
         name = comic["name"]
         try:
             if "page" in comic:
-                title, link, body = section_from_page(comic)
+                title, link, images = section_from_page(comic)
             else:
-                title, link, body = section_from_feed(comic)
+                title, link, images = section_from_feed(comic)
         except Exception as e:
             print(f"[warn] {name}: {e}", file=sys.stderr)
             failures.append(name)
             continue
 
-        body = rehost_images(body, link, day_dir, base_url, saved)
+        parts = [f'<h2><a href="{html.escape(link)}">{html.escape(title)}</a></h2>']
+        for src, hover in images:
+            parts.append(f'<img src="{html.escape(src)}">')
+            if hover:
+                parts.append(f"<p><em>{html.escape(hover)}</em></p>")
+        section = "\n".join(parts)
 
-        sections.append(
-            f"""
-            <h2>{html.escape(name)}</h2>
-            <p><em>{html.escape(title)}</em> &mdash; <a href="{html.escape(link)}">original</a></p>
-            <div>{body}</div>
-            <hr>
-            """
-        )
+        section = rehost_images(section, link, day_dir, base_url, saved)
+        sections.append(section + "\n<hr>\n")
 
     if not sections:
         raise RuntimeError("No comics could be fetched; not sending an empty digest.")

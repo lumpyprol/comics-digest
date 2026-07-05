@@ -3,6 +3,9 @@
 #   feed: <RSS/Atom feed URL>   — for comics with a feed (most webcomics)
 #   page: <web page URL>        — for comics without a feed; the day's strip
 #                                 is pulled from the page's og:image metadata
+# Optional:
+#   bonus_id: <html element id> — scrape a bonus panel from the strip's page
+#                                 (e.g. SMBC's votey lives in id="aftercomic")
 # To add a comic: add two lines. To remove: delete its two lines. That's it.
 
 comics:
@@ -17,3 +20,4 @@ comics:
 
   - name: Saturday Morning Breakfast Cereal
     feed: https://www.smbc-comics.com/comic/rss
+    bonus_id: aftercomic
