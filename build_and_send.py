@@ -74,17 +74,26 @@ def og_meta(page_html, prop):
     return m.group(1) if m else None
 
 
+def img_attr(tag, name):
+    """Extract an attribute value from an <img> tag, respecting the quote
+    style: a double-quoted value may contain apostrophes and vice versa."""
+    m = re.search(name + r'\s*=\s*"([^"]*)"', tag, re.IGNORECASE)
+    if not m:
+        m = re.search(name + r"\s*=\s*'([^']*)'", tag, re.IGNORECASE)
+    return m.group(1) if m else None
+
+
 def parse_images(fragment):
     """Extract (src, hover_text) for each <img> in an HTML fragment.
     The hidden joke lives in the title attribute for xkcd/SMBC/qwantz."""
     images = []
     for tag in re.findall(r"<img\b[^>]*>", fragment, re.IGNORECASE):
-        src = re.search(r'src=["\']([^"\']+)["\']', tag, re.IGNORECASE)
+        src = img_attr(tag, "src")
         if not src:
             continue
-        hover = re.search(r'title=["\']([^"\']*)["\']', tag, re.IGNORECASE)
-        text = html.unescape(hover.group(1)).strip() if hover else None
-        images.append((src.group(1), text or None))
+        hover = img_attr(tag, "title")
+        text = html.unescape(hover).strip() if hover else None
+        images.append((src, text or None))
     return images
 
 
@@ -219,7 +228,7 @@ def build_digest(comics, base_url):
             failures.append(name)
             continue
 
-        parts = [f'<h2><a href="{html.escape(link)}">{html.escape(title)}</a></h2>']
+        parts = []
         for src, hover in images:
             parts.append(f'<img src="{html.escape(src)}">')
             if hover:
